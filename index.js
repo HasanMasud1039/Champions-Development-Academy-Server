@@ -3,7 +3,6 @@ const app = express();
 const cors = require("cors");
 require("dotenv").config();
 const stripe = require("stripe")(process.env.PAYMENT_SECURITY_KEY);
-
 const port = process.env.PORT || 5000;
 
 const jwt = require("jsonwebtoken");
@@ -11,7 +10,7 @@ const jwt = require("jsonwebtoken");
 // middleware//
 app.use(cors());
 app.use(express.json());
-
+//Verify token
 const verifyJWT = (req, res, next) => {
   const authentication = req.headers.authentication;
   if (!authentication) {
@@ -34,11 +33,20 @@ const verifyJWT = (req, res, next) => {
     next();
   });
 };
+//JWT Authentication
 
+app.post("/jwt", (req, res) => {
+  const user = req.body;
+  const token = jwt.sign(user, process.env.ACCESS_TOKEN_JWT, {
+    expiresIn: "1h",
+  });
+  res.send({ token });
+});
+
+// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = `mongodb+srv://${process.env.USER_NAME}:${process.env.USER_PASS}@cluster0.fznkpfd.mongodb.net/?retryWrites=true&w=majority`;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -83,16 +91,18 @@ async function run() {
       .collection("paymentCards");
 
 
-    //JWT Authentication
+    //Verify Super Admin
+    const verifySuperAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const query = { email: email };
+      const user = await manageUsersCollection.findOne(query);
 
-    app.post("/jwt", (req, res) => {
-      const user = req.body;
-      const token = jwt.sign(user, process.env.ACCESS_TOKEN_JWT, {
-        expiresIn: "1h",
-      });
-      res.send({ token });
-    });
-
+      if (user?.role !== "superAdmin") {
+        return res.status(403).send({ error: true, message: "FORBIDDEN user" });
+      }
+      next();
+    };
+    //Verify Admin
     const verifyAdmin = async (req, res, next) => {
       const email = req.decoded.email;
       const query = { email: email };
@@ -105,7 +115,6 @@ async function run() {
     };
 
     //verifyInstructors
-
     const verifyInstructor = async (req, res, next) => {
       const email = req.decoded.email;
       const query = { email: email };
@@ -123,11 +132,20 @@ async function run() {
       const result = await cartCollection.insertOne(item);
       res.send(result);
     })
-
-    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
-      const result = await manageUsersCollection.find().toArray();
+    //All users for Super Admin
+    app.get("/allUsers", verifyJWT, verifySuperAdmin, async (req, res) => {
+      const query = { role: { $ne: 'superAdmin' } }; // Use $ne (not equal) to filter users with role not equal to 'superAdmin'
+      const result = await manageUsersCollection.find(query).toArray();
       res.send(result);
     });
+    //All users for Admin
+    app.get("/users", verifyJWT, verifyAdmin, async (req, res) => {
+      const query = { role: { $ne: 'superAdmin' } }; // Use $ne (not equal) to filter users with role not equal to 'superAdmin'
+      const result = await manageUsersCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    //Get items for users (without authentication)
     app.get("/sponsors", async (req, res) => {
       const result = await sponsorCollection.find().toArray();
       res.send(result);
@@ -136,33 +154,42 @@ async function run() {
       const result = await paymentCardCollection.find().toArray();
       res.send(result);
     });
-    app.get("/popularInstructors", verifyJWT, async (req, res) => {
+    app.get("/popularInstructors", async (req, res) => {
       const result = await instructorsCollection.find().toArray();
       res.send(result);
     });
 
+    //Post New User
     app.post("/users", async (req, res) => {
       const user = req.body;
-
       const query = { email: user.email };
-
       const existingUser = await manageUsersCollection.findOne(query);
       if (existingUser) {
         return res.send({
           message: ` ${user.name} already exists in the Champions database`,
         });
       }
-
       const result = await manageUsersCollection.insertOne(user);
       res.send(result);
     });
 
     // Student Dashboard
 
-    //home page 2 Section// Popular Classes Section
-    //todo Classes page
-    app.get("/classes/all",  async (req, res) => {
-      const query = { Status: "approved" };
+    //All classes
+    app.get("/allClasses", async (req, res) => {
+      const result = await instructorClassCollection.find().toArray();
+      res.send(result);
+    });
+    //delete class by id by Super Admin
+    app.delete("/allClasses/:id", verifySuperAdmin, verifyJWT, async (req, res) => {
+      const classId = req.params.id;
+      const query = { _id: new ObjectId(classId) };
+      const result = await instructorClassCollection.deleteOne(query);
+      res.send(result);
+    });
+    //All classes (greater than zero available seats)
+    app.get("/classes/all", async (req, res) => {
+      const query = { Status: "approved", availableSeats: { $gt: 0 } };
       const result = await instructorClassCollection.find(query).toArray();
       res.send(result);
     });
@@ -174,7 +201,6 @@ async function run() {
       const status = req.body.status; // Access classId from req.body
       const availableSeatsInt = parseInt(req.body.availableSeats); // Access classId from req.body
       const enrolledStudentsInt = parseInt(req.body.enrolledStudents); // Access classId from req.body
-      console.log(classId);
       const query = { instructorEmail: instructorEmail, className: className, Status: status };
       const update = {
         // $set: {availableSeats: availableSeatsInt, enrolledStudents: enrolledStudentsInt},
@@ -237,7 +263,7 @@ async function run() {
 
     app.post("/select/classes", async (req, res) => {
       const select = req.body;
-      const query = {newId: select.newId, email: select.email};
+      const query = { newId: select.newId, email: select.email };
 
       const existingSelect = await userSelectClassCollection.findOne(query);
       if (existingSelect) {
@@ -295,8 +321,6 @@ async function run() {
       res.send(result);
     });
 
-    /////////////
-
     app.patch("/classes/instructor", async (req, res) => {
       const email = req.body.email; // Access email from req.body
       const instructorData = req.body.instructorData; // Access data from req.body
@@ -307,13 +331,13 @@ async function run() {
       const update = {
         $set: {
           address: instructorData.address,
-          age : instructorData.age,
-          category :  instructorData.className,
-          contact   :  instructorData.contact,
-          description :  instructorData.description,
-          experience  :  instructorData.experience,
-          imageURL    :  instructorData.imageURL,
-          skill       :  instructorData.skill
+          age: instructorData.age,
+          category: instructorData.className,
+          contact: instructorData.contact,
+          description: instructorData.description,
+          experience: instructorData.experience,
+          imageURL: instructorData.imageURL,
+          skill: instructorData.skill
         }
       };
       const options = { upsert: true };
@@ -350,6 +374,7 @@ async function run() {
       );
       res.send(result);
     });
+
     app.patch("/class/denied/:id", async (req, res) => {
       const deniedClassApproved = req.params.id;
       const filter = { _id: new ObjectId(deniedClassApproved) };
@@ -368,21 +393,20 @@ async function run() {
     });
 
     //admin feedback to instructor
-
     app.patch("/admin/feedback", async (req, res) => {
       try {
         const feedback = req.body.feedback;
         const feedbackId = req.body._id;
         const instructorEmail = req.body.instructorEmail;
         const className = req.body.className;
-        
+
         const query = { _id: new ObjectId(feedbackId) };
         const options = { upsert: true };
         const updateDoc = {
           $set: {
             // _id: feedbackId,
             feedback: feedback,
-            instructorEmail : instructorEmail,
+            instructorEmail: instructorEmail,
             className: className
           },
         };
@@ -400,19 +424,16 @@ async function run() {
 
     app.get("/admin/feedback/:email", verifyJWT, async (req, res) => {
       const email = req.params.email;
-      const query = { feedback:{$exists:true} ,instructorEmail: email };
+      const query = { feedback: { $exists: true }, instructorEmail: email };
       const result = await instructorClassCollection.find(query).toArray();
-
-
       res.send(result);
     });
+
     // GET instructor classes by email
     app.get("/users/instructor/class/:email", async (req, res) => {
       const email = req.params.email;
-
       const query = { instructorEmail: email };
       const result = await instructorClassCollection.find(query).toArray();
-
       res.send(result);
     });
 
@@ -425,7 +446,6 @@ async function run() {
 
     app.get("/users/instructor/:email", verifyJWT, async (req, res) => {
       const email = req.params.email;
-
       if (req.decoded.email !== email) {
         res.send({ instructor: false });
       } else {
@@ -441,6 +461,7 @@ async function run() {
         }
       }
     });
+
     //TODO Verify that
     app.patch("/users/instructors/:id", async (req, res) => {
       const instructorsId = req.params.id;
@@ -455,15 +476,54 @@ async function run() {
       res.send(result);
     });
 
+    //make user
+    app.patch("/users/:id", async (req, res) => {
+      const userId = req.params.id;
+      const filter = { _id: new ObjectId(userId) };
+
+      const updateDoc = {
+        $unset: {
+          role: "",
+        },
+      };
+      const result = await manageUsersCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
+    //delete user
+    app.delete("/users/:id", async (req, res) => {
+      const userId = req.params.id;
+      const filter = { _id: new ObjectId(userId) };
+      const result = await manageUsersCollection.deleteOne(filter);
+      res.send(result);
+    });
+
     //delete instructor class
     app.delete("/users/instructor/class/:id", async (req, res) => {
       const classId = req.params.id;
-      // console.log("deleted id ",classId);
       const query = { _id: new ObjectId(classId) };
-      console.log("deleted query id ", query.classId);
       const result = await instructorClassCollection.deleteOne(query);
       res.send(result);
-      console.log("deleted result ", result);
+    });
+
+    //SuperAdmin
+    app.get("/users/superAdmin/:email", verifyJWT, async (req, res) => {
+      const email = req.params.email;
+
+      if (req.decoded.email !== email) {
+        res.send({ superAdmin: false });
+      } else {
+        try {
+          const query = { email: email };
+          const user = await manageUsersCollection.findOne(query);
+          const result = { superAdmin: user?.role === "superAdmin" };
+          res.send(result);
+        } catch (error) {
+          res
+            .status(500)
+            .send({ error: true, message: "Internal server error" });
+        }
+      }
     });
 
     //admin
